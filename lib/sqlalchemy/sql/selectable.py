@@ -31,7 +31,6 @@ from .annotation import Annotated
 import itertools
 from sqlalchemy.sql.visitors import Visitable
 
-
 def _interpret_as_from(element):
     insp = inspection.inspect(element, raiseerr=False)
     if insp is None:
@@ -1086,7 +1085,6 @@ class Alias(FromClause):
     @property
     def bind(self):
         return self.element.bind
-
 
 class CTE(Alias):
     """Represent a Common Table Expression.

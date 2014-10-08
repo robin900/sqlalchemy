@@ -11,7 +11,7 @@ Provide :class:`.Insert`, :class:`.Update` and :class:`.Delete`.
 
 from .base import Executable, _generative, _from_objects, DialectKWArgs
 from .elements import ClauseElement, _literal_as_text, Null, and_, _clone
-from .selectable import _interpret_as_from, _interpret_as_select, HasPrefixes
+from .selectable import _interpret_as_from, _interpret_as_select, HasPrefixes, Alias
 from .. import util
 from .. import exc
 
@@ -780,3 +780,61 @@ class Delete(UpdateBase):
     def _copy_internals(self, clone=_clone, **kw):
         # TODO: coverage
         self._whereclause = clone(self._whereclause, **kw)
+
+class ModifyingCTE(Alias):
+    """
+    Represent a Common Table Expression that modifies data
+    and returns the modified data via a RETURNING clause.
+
+    Recursive modifying CTEs are not allowed by any known dialect.
+    Postgres 9.1 and later supports the modifying CTE.
+
+    .. versionadded:: 1.0.xx
+    """
+    __visit_name__ = 'cte'
+
+    def __init__(self, element, name, _cte_alias=None, _restates=frozenset()):
+        if not name:
+            raise ValueError("name for ModifyingCTE must be provided")
+        if not isinstance(element, UpdateBase):
+            raise ValueError("Element for ModyfingCTE must be an INSERT, UPDATE, or DELETE statement")
+        if not element._returning:
+            raise ValueError("DML statement for ModifyingCTE must have explicit returning() columns")
+        self._cte_alias = _cte_alias
+        self._restates = _restates
+        self.recursive = False 
+        super(ModifyingCTE, self).__init__(element, name)
+
+    def alias(self, name=None, flat=False):
+        return ModifyingCTE(
+            self.original,
+            name=name,
+            _cte_alias=self
+        )
+
+    def as_scalar(self):
+        try:
+            return self.element.as_scalar()
+        except AttributeError:
+            raise AttributeError("Element %s does not support "
+                                 "'as_scalar()'" % self.element)
+
+    def is_derived_from(self, fromclause):
+        if fromclause in self._cloned_set:
+            return True
+        return self.element.is_derived_from(fromclause)
+
+    def _populate_column_collection(self):
+        for col in self.element._returning:
+            self._columns.replace(col)
+
+    def _refresh_for_new_column(self, column):
+        col = self.element._refresh_for_new_column(column)
+        if col is not None:
+            if not self._cols_populated:
+                return None
+            else:
+                return col._make_proxy(self)
+        else:
+            return None
+

@@ -45,12 +45,12 @@ from .base import ColumnCollection, Generative, Executable, \
     PARSE_AUTOCOMMIT
 
 from .selectable import Alias, Join, Select, Selectable, TableClause, \
-    CompoundSelect, CTE, FromClause, FromGrouping, SelectBase, \
+    CompoundSelect, FromClause, FromGrouping, SelectBase, \
     alias, GenerativeSelect, \
     subquery, HasPrefixes, Exists, ScalarSelect, TextAsFrom
 
 
-from .dml import Insert, Update, Delete, UpdateBase, ValuesBase
+from .dml import Insert, Update, Delete, UpdateBase, ValuesBase, ModifyingCTE
 
 # factory functions - these pull class-bound constructors and classmethods
 # from SQL elements and selectables into public functions.  This allows

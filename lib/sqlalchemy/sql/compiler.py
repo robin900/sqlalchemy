@@ -1810,6 +1810,8 @@ class SQLCompiler(Compiled):
                 ', '.join([c[1] for c in crud_params])
 
         if self.returning and not self.returning_precedes_values:
+            returning_clause = self.returning_clause(
+                insert_stmt, self.returning)
             text += " " + returning_clause
 
         return text
@@ -1826,6 +1828,10 @@ class SQLCompiler(Compiled):
         MySQL overrides this.
 
         """
+        if kw.has_key('asfrom'):
+            del kw['asfrom']
+        if kw.has_key('iscrud'):
+            del kw['iscrud']
         return from_table._compiler_dispatch(self, asfrom=True,
                                              iscrud=True, **kw)
 

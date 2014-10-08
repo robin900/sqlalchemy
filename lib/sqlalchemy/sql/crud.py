@@ -12,6 +12,7 @@ within INSERT and UPDATE statements.
 from .. import util
 from .. import exc
 from . import elements
+from .dml import Update, Insert, Delete
 import operator
 
 REQUIRED = util.symbol('REQUIRED', """
@@ -59,7 +60,7 @@ def _get_crud_params(compiler, stmt, **kw):
     # but in the case of mysql multi-table update, the rules for
     # .key must conditionally take tablename into account
     _column_as_key, _getattr_col_key, _col_bind_name = \
-        _key_getters_for_crud_column(compiler)
+        _key_getters_for_crud_column(compiler, stmt)
 
     # if we have statement parameters - set defaults in the
     # compiled params
@@ -88,7 +89,7 @@ def _get_crud_params(compiler, stmt, **kw):
             compiler, stmt, stmt_parameters, check_columns,
             _col_bind_name, _getattr_col_key, values, kw)
 
-    if compiler.isinsert and stmt.select_names:
+    if compiler.isinsert and isinstance(stmt, Insert) and stmt.select_names:
         # for an insert from select, we can only use names that
         # are given, so only select for those names.
         cols = (stmt.table.c[_column_as_key(name)]
@@ -126,15 +127,15 @@ def _create_bind_param(compiler, col, value, required=False, name=None):
     bindparam._is_crud = True
     return bindparam._compiler_dispatch(compiler)
 
-def _key_getters_for_crud_column(compiler):
-    if compiler.isupdate and compiler.statement._extra_froms:
+def _key_getters_for_crud_column(compiler, stmt):
+    if compiler.isupdate and isinstance(stmt, Update) and stmt._extra_froms:
         # when extra tables are present, refer to the columns
         # in those extra tables as table-qualified, including in
         # dictionaries and when rendering bind param names.
         # the "main" table of the statement remains unqualified,
         # allowing the most compatibility with a non-multi-table
         # statement.
-        _et = set(compiler.statement._extra_froms)
+        _et = set(stmt._extra_froms)
 
         def _column_as_key(key):
             str_key = elements._column_as_key(key)
