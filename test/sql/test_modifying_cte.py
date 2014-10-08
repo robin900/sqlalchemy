@@ -12,7 +12,7 @@ class ModifyingCTETest(fixtures.TestBase, AssertsCompiledSQL):
 
     __dialect__ = 'postgresql'
 
-    def test_nonrecursive(self):
+    def test_upsert(self):
         md = MetaData()
         orders = Table('orders', md,
                        Column('region', primary_key=True),
