@@ -24,10 +24,16 @@ To generate user-defined SQL strings, see
 """
 
 import re
+from collections import namedtuple 
 from . import schema, sqltypes, operators, functions, visitors, \
     elements, selectable, crud
 from .. import util, exc
 import itertools
+
+stackentry = namedtuple(
+    'stackentry', 
+    ['correlate_froms', 'iswrapper', 'asfrom_froms', 'selectable', 'isinsert', 'isupdate', 'isdelete']
+    )
 
 RESERVED_WORDS = set([
     'all', 'analyse', 'analyze', 'and', 'any', 'array',
@@ -292,12 +298,6 @@ class SQLCompiler(Compiled):
 
     compound_keywords = COMPOUND_KEYWORDS
 
-    isdelete = isinsert = isupdate = False
-    """class-level defaults which can be set at the instance
-    level to define if this Compiled instance represents
-    INSERT/UPDATE/DELETE
-    """
-
     returning = None
     """holds the "returning" collection of columns if
     the statement is CRUD and defines returning columns
@@ -421,6 +421,21 @@ class SQLCompiler(Compiled):
         return len(self.stack) > 1
 
     @property
+    def isinsert(self):
+        return self.stack and self.stack[-1].isinsert
+
+    @property
+    def isupdate(self):
+        return self.stack and self.stack[-1].isupdate
+
+    @property
+    def isdelete(self):
+        return self.stack and self.stack[-1].isdelete
+
+    def current_stack_entry(self):
+        return self._default_stack_entry if not self.stack else self.stack[-1]
+
+    @property
     def sql_compiler(self):
         return self
 
@@ -493,7 +508,7 @@ class SQLCompiler(Compiled):
     def visit_label_reference(
             self, element, within_columns_clause=False, **kwargs):
         if self.stack and self.dialect.supports_simple_order_by_label:
-            selectable = self.stack[-1]['selectable']
+            selectable = self.stack[-1].selectable
 
             with_cols, only_froms = selectable._label_resolve_dict
             if within_columns_clause:
@@ -525,7 +540,7 @@ class SQLCompiler(Compiled):
                 element._text_clause
             )
 
-        selectable = self.stack[-1]['selectable']
+        selectable = self.stack[-1].selectable
         with_cols, only_froms = selectable._label_resolve_dict
 
         try:
@@ -665,12 +680,12 @@ class SQLCompiler(Compiled):
                            parens=True, **kw):
 
         toplevel = not self.stack
-        entry = self._default_stack_entry if toplevel else self.stack[-1]
+        entry = self.current_stack_entry()
 
         populate_result_map = force_result_map or (
             compound_index == 0 and (
                 toplevel or
-                entry['iswrapper']
+                entry.iswrapper
             )
         )
 
@@ -786,15 +801,16 @@ class SQLCompiler(Compiled):
     def visit_compound_select(self, cs, asfrom=False,
                               parens=True, compound_index=0, **kwargs):
         toplevel = not self.stack
-        entry = self._default_stack_entry if toplevel else self.stack[-1]
+        entry = self.current_stack_entry()
 
-        self.stack.append(
-            {
-                'correlate_froms': entry['correlate_froms'],
-                'iswrapper': toplevel,
-                'asfrom_froms': entry['asfrom_froms'],
-                'selectable': cs
-            })
+        self.stack.append( 
+            stackentry(
+                correlate_froms=entry.correlate_froms,
+                iswrapper=toplevel,
+                asfrom_froms=entry.asfrom_froms,
+                selectable=cs
+            ) 
+        )
 
         keyword = self.compound_keywords.get(cs.keyword)
 
@@ -1429,11 +1445,15 @@ class SQLCompiler(Compiled):
             objs = tuple([d.get(col, col) for col in objs])
             self.result_map[key] = (name, objs, typ)
 
-    _default_stack_entry = util.immutabledict([
-        ('iswrapper', False),
-        ('correlate_froms', frozenset()),
-        ('asfrom_froms', frozenset())
-    ])
+    _default_stack_entry = stackentry(
+        correlate_froms=frozenset(),
+        iswrapper=False,
+        asfrom_froms=frozenset(),
+        selectable=None,
+        isinsert=False,
+        isupdate=False,
+        isdelete=False
+    )
 
     def _display_froms_for_select(self, select, asfrom):
         # utility method to help external dialects
@@ -1441,10 +1461,10 @@ class SQLCompiler(Compiled):
         # specifically the oracle dialect needs this feature
         # right now.
         toplevel = not self.stack
-        entry = self._default_stack_entry if toplevel else self.stack[-1]
+        entry = self.current_stack_entry()
 
-        correlate_froms = entry['correlate_froms']
-        asfrom_froms = entry['asfrom_froms']
+        correlate_froms = entry.correlate_froms
+        asfrom_froms = entry.asfrom_froms
 
         if asfrom:
             froms = select._get_display_froms(
@@ -1482,12 +1502,12 @@ class SQLCompiler(Compiled):
             )
 
         toplevel = not self.stack
-        entry = self._default_stack_entry if toplevel else self.stack[-1]
+        entry = self.current_stack_entry()
 
         populate_result_map = force_result_map or (
             compound_index == 0 and (
                 toplevel or
-                entry['iswrapper']
+                entry.iswrapper
             )
         )
 
@@ -1570,8 +1590,8 @@ class SQLCompiler(Compiled):
         return hint_text, byfrom
 
     def _setup_select_stack(self, select, entry, asfrom, iswrapper):
-        correlate_froms = entry['correlate_froms']
-        asfrom_froms = entry['asfrom_froms']
+        correlate_froms = entry.correlate_froms
+        asfrom_froms = entry.asfrom_froms
 
         if asfrom:
             froms = select._get_display_froms(
@@ -1586,12 +1606,15 @@ class SQLCompiler(Compiled):
         new_correlate_froms = set(selectable._from_objects(*froms))
         all_correlate_froms = new_correlate_froms.union(correlate_froms)
 
-        new_entry = {
-            'asfrom_froms': new_correlate_froms,
-            'iswrapper': iswrapper,
-            'correlate_froms': all_correlate_froms,
-            'selectable': select,
-        }
+        new_entry = stackentry(
+            asfrom_froms=new_correlate_froms,
+            iswrapper=iswrapper,
+            correlate_froms=all_correlate_froms,
+            selectable=select,
+            isinsert=False,
+            isupdate=False,
+            isdelete=False
+        )
         self.stack.append(new_entry)
         return froms
 
@@ -1729,7 +1752,18 @@ class SQLCompiler(Compiled):
         )
 
     def visit_insert(self, insert_stmt, **kw):
-        self.isinsert = True
+        self.stack.append(
+            stackentry(
+                correlate_froms=set([insert_stmt.table]),
+                iswrapper=False,
+                asfrom_froms=set([insert_stmt.table]),
+                selectable=insert_stmt,
+                isinsert=True,
+                isupdate=False,
+                isdelete=False
+            )
+        )
+
         crud_params = crud._get_crud_params(self, insert_stmt, **kw)
 
         if not crud_params and \
@@ -1812,6 +1846,8 @@ class SQLCompiler(Compiled):
         if self.returning and not self.returning_precedes_values:
             text += " " + returning_clause
 
+        self.stack.pop(-1)
+
         return text
 
     def update_limit_clause(self, update_stmt):
@@ -1846,12 +1882,16 @@ class SQLCompiler(Compiled):
 
     def visit_update(self, update_stmt, **kw):
         self.stack.append(
-            {'correlate_froms': set([update_stmt.table]),
-             "iswrapper": False,
-             "asfrom_froms": set([update_stmt.table]),
-             "selectable": update_stmt})
-
-        self.isupdate = True
+            stackentry(
+                correlate_froms=set([update_stmt.table]),
+                iswrapper=False,
+                asfrom_froms=set([update_stmt.table]),
+                selectable=update_stmt,
+                isinsert=False,
+                isupdate=True,
+                isdelete=False
+            )
+        )
 
         extra_froms = update_stmt._extra_froms
 
@@ -1932,11 +1972,17 @@ class SQLCompiler(Compiled):
         return crud._key_getters_for_crud_column(self)
 
     def visit_delete(self, delete_stmt, **kw):
-        self.stack.append({'correlate_froms': set([delete_stmt.table]),
-                           "iswrapper": False,
-                           "asfrom_froms": set([delete_stmt.table]),
-                           "selectable": delete_stmt})
-        self.isdelete = True
+        self.stack.append(
+            stackentry(
+                correlate_froms=set([delete_stmt.table]),
+                iswrapper=False,
+                asfrom_froms=set([delete_stmt.table]),
+                selectable=delete_stmt,
+                isinsert=False,
+                isupdate=False,
+                isdelete=True
+            )
+        )
 
         text = "DELETE "
 
