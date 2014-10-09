@@ -2,13 +2,13 @@ from sqlalchemy.testing import fixtures
 from sqlalchemy.testing import AssertsCompiledSQL, assert_raises_message
 from sqlalchemy.sql import select, func, literal, text
 from sqlalchemy.schema import Table, Column, MetaData
-from sqlalchemy.sql.expression import exists, ModifyingCTE
+from sqlalchemy.sql.expression import exists, CTEWithDML
 from sqlalchemy.dialects import mssql
 from sqlalchemy.engine import default
 from sqlalchemy.exc import CompileError
 
 
-class ModifyingCTETest(fixtures.TestBase, AssertsCompiledSQL):
+class CTEWithDMLTest(fixtures.TestBase, AssertsCompiledSQL):
 
     __dialect__ = 'postgresql'
 
@@ -21,7 +21,7 @@ class ModifyingCTETest(fixtures.TestBase, AssertsCompiledSQL):
                        Column('quantity')
                        )
 
-        upsert = ModifyingCTE(orders.update()
+        upsert = CTEWithDML(orders.update()
                    .where(orders.c.region == 'Region1')
                    .values(amount=1.0,product='Product1',quantity=1)
                    .returning(*(orders.c._all_columns)), 'upsert'

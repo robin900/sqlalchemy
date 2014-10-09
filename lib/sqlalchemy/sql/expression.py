@@ -50,7 +50,7 @@ from .selectable import Alias, Join, Select, Selectable, TableClause, \
     subquery, HasPrefixes, Exists, ScalarSelect, TextAsFrom
 
 
-from .dml import Insert, Update, Delete, UpdateBase, ValuesBase, ModifyingCTE
+from .dml import Insert, Update, Delete, UpdateBase, ValuesBase, CTEWithDML
 
 # factory functions - these pull class-bound constructors and classmethods
 # from SQL elements and selectables into public functions.  This allows
