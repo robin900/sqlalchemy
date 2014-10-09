@@ -38,7 +38,7 @@ class CompileTest(fixtures.TestBase, AssertsExecutionResults):
 
         cls.dialect = default.DefaultDialect()
 
-    @profiling.function_call_count()
+    @profiling.function_call_count(variance=.1)
     def test_insert(self):
         t1.insert().compile(dialect=self.dialect)
 
