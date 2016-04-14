@@ -1957,6 +1957,10 @@ class SQLCompiler(Compiled):
             text += " VALUES (%s)" % \
                 ', '.join([c[1] for c in crud_params])
 
+        pre_returning_clause = self.insert_pre_returning_clause(insert_stmt)
+        if pre_returning_clause:
+            text += " " + pre_returning_clause
+
         if returning_clause and not self.returning_precedes_values:
             text += " " + returning_clause
 
@@ -1969,6 +1973,11 @@ class SQLCompiler(Compiled):
             return "(" + text + ")"
         else:
             return text
+
+    def insert_pre_returning_clause(self, insert_stmt):
+        """Provide a hook to add text to an INSERT after the VALUES
+        clause and prior to RETURNING clause."""
+        return None
 
     def update_limit_clause(self, update_stmt):
         """Provide a hook for MySQL to add LIMIT to the UPDATE"""

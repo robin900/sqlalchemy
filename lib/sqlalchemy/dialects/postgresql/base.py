@@ -247,6 +247,102 @@ use the :meth:`._UpdateBase.returning` method on a per-statement basis::
         where(table.c.name=='foo')
     print result.fetchall()
 
+.. _postgresql_insert_on_conflict:
+
+INSERT...ON CONFLICT (Upsert)
+------------------------------
+
+Starting with version 9.5, PostgreSQL allows "upserts" (update or insert)
+of rows into a table via the ``INSERT`` statement's ``ON CONFLICT`` clause.
+PostgreSQL will first attempt to insert a row; if a unique constraint would be
+violated because a row already exists with those unique values, the optional
+``ON CONFLICT`` clause specifies how to handle the constraint violation:
+either by skipping the insertion of that row (``ON CONFLICT DO NOTHING``),
+or by instead performing an update of the already existing row, either with
+values from the row being inserted or literal values.
+
+The dialect recognizes the ``postgresql_on_conflict`` keyword argument
+to :class:`.Insert`, :meth:`.Table.insert`, and other ``INSERT`` expression
+builders.
+
+Most commonly, ``ON CONFLICT`` is used to perform an update of the already
+existing row if there is a primary key constraint violated, using the values
+of the row proposed for insert. Use the value ``'update'`` for
+the keyword argument::
+
+    table.insert(postgresql_on_conflict='update').\\
+        values(key_column='existing_value', other_column='foo')
+
+and the SQL compiler will produce an ``ON CONFLICT`` clause that performs
+``DO UPDATE SET...`` for every column value in the ``VALUES`` clause that
+is not a primary key column for the target table. The produced SQL will use
+the primary key columns as the "conflict target" in the ``ON CONFLICT`` clause.
+This usage requires that the targeted table have at least one column
+participating in a :class:`.PrimaryKeyConstraint`.
+
+``ON CONFLICT`` is also commonly used to skip inserting a row entirely
+if any conflict with a unique or exclusion constraint occurs.
+To do this, use the value ``'nothing'`` for the keyword argument::
+
+    table.insert(postgresql_on_conflict='nothing').\\
+        values(key_column='existing_value', other_column='foo')
+
+Less commonly, you may need to specify which of several unique constraints on
+a table should be used to determine if an insert conflict exists. In these
+cases, use the :class:`.postgresql.DoNothing` or :class:`.postgresql.DoUpdate`
+object. You may choose one of the following generative methods to specify
+the conflict target:
+
+    * :meth:`.postgresql.OnConflictClause.on_columns`, each argument
+      being either a string with the column's unqualified name, or
+      the column object itself. An optional keyword argument ``where``
+      can be a string or SQL expression that can locate a particular index
+      (such as a :ref:`partial index <postgresql_partial_index>`) to use
+      for conflict detection.
+
+    * :meth:`.postgresql.OnConflictClause.on_constraint`, passing
+      either a string with the unique/exclusion constraint's name,
+      or the constraint object itself.
+
+If you use :class:`.postgresql.DoUpdate`, you need to specify which columns
+on the existing row to set with values from the row proposed for insert.
+Use the :meth:`.postgresql.DoUpdate.set_with_excluded` generative method
+to do so, each argument being either a string with the column name or
+the column object itself. Each of these columns will appear in a ``SET``
+clause where the value comes from PostgreSQL's special `excluded` alias
+representing the row proposed for insertion::
+
+    from sqlalchemy.dialects.postgresql import DoUpdate
+    from sqlalchemy.schema import UniqueConstraint
+
+    unique_constr = UniqueConstraint(table.c.username, name='uniq_un')
+    update_action = DoUpdate().on_constraint(unique_constr).\\
+        set_with_excluded('key_column', 'other_column')
+
+    table.insert(postgresql_on_conflict=update_action).\\
+        values(key_column='existing_value', other_column='foo')
+
+You may also provide an WHERE clause as an extra condition to be
+met for each attempted update, with the :meth:`.postgresql.DoUpdate.where`
+generative method::
+
+    from sqlalchemy.dialects.postgresql import DoUpdate
+
+    unique_constr = UniqueConstraint(table.c.username, name='uniq_un')
+    update_action = DoUpdate().on_constraint(unique_constr).\\
+        set_with_excluded('key_column', 'other_column').\\
+        where(table.c.other_column != None)
+
+Other, more sophisticated forms of ``ON CONFLICT`` are possible, especially
+with "index expressions" in the conflict target, and with what can be put
+in `SET ...` clauses, but they are
+not yet supported or documented by the dialect. Use text-based statements
+for more advanced ``ON CONFLICT`` clauses.
+
+For more information on the PostgreSQL feature, see the
+`ON CONFLICT section of the INSERT statement in the PostgreSQL docs
+<http://www.postgresql.org/docs/current/static/sql-insert.html#SQL-ON-CONFLICT>`_.
+
 .. _postgresql_match:
 
 Full Text Search
@@ -353,6 +449,8 @@ Postgresql-Specific Index Options
 
 Several extensions to the :class:`.Index` construct are available, specific
 to the PostgreSQL dialect.
+
+.. _postgresql_partial_indexes:
 
 Partial Indexes
 ^^^^^^^^^^^^^^^^
@@ -607,8 +705,9 @@ import datetime as dt
 
 from ... import sql, schema, exc, util
 from ...engine import default, reflection
-from ...sql import compiler, expression
+from ...sql import compiler, expression, crud
 from ... import types as sqltypes
+from . import on_conflict
 
 try:
     from uuid import UUID as _python_UUID
@@ -640,7 +739,6 @@ RESERVED_WORDS = set(
 _DECIMAL_TYPES = (1231, 1700)
 _FLOAT_TYPES = (700, 701, 1021, 1022)
 _INT_TYPES = (20, 21, 23, 26, 1005, 1007, 1016)
-
 
 class BYTEA(sqltypes.LargeBinary):
     __visit_name__ = 'BYTEA'
@@ -1194,6 +1292,67 @@ class PGCompiler(compiler.SQLCompiler):
         else:
             return "SUBSTRING(%s FROM %s)" % (s, start)
 
+    def insert_pre_returning_clause(self, insert_stmt, **kw):
+        on_conflict_option = insert_stmt.dialect_options['postgresql']['on_conflict']
+        if on_conflict_option is None:
+            return None
+        elif on_conflict_option == 'nothing':
+            return self.on_conflict_clause(on_conflict.DoNothing())
+        elif on_conflict_option == 'update':
+            oc_clause = on_conflict.DoUpdate()
+            target_table = insert_stmt.table
+            target_table_pk = getattr(target_table, 'primary_key', None)
+            if not target_table_pk or not target_table_pk.columns:
+                raise exc.CompileError(
+                    "Cannot compile postgresql_on_confict='update' without "
+                    "the table offering a PrimaryKeyConstraint with "
+                    "at least one column")
+
+            oc_clause.on_columns(*target_table.primary_key.columns)
+            oc_clause.set_with_excluded(*[
+                c for c in target_table.columns.values() if not target_table_pk.contains_column(c)
+                ])
+            return self.on_conflict_clause(oc_clause)
+        elif hasattr(on_conflict_option, 'action_do'):
+            return self.on_conflict_clause(on_conflict_option)
+        else:
+            raise exc.CompileError("Unrecognized postgresql_on_conflict value: %r" % on_conflict_option)
+
+    def on_conflict_clause(self, clause, **kw):
+        # if do_nothing, conflict target is optional.
+        if not clause.conflict_target_type and clause.action_do != 'nothing':
+            raise exc.CompileError("ON CONFLICT clause must specify a conflict target if action is not DO NOTHING")
+        if clause.conflict_target_type == 'constraint':
+            target_text = 'ON CONSTRAINT %s ' % clause.conflict_target_elements
+        elif clause.conflict_target_type == 'columns':
+            target_text = '(%s) ' % ', '.join(
+                (c if isinstance(c, util.string_types) else self.process(c, use_schema=False))
+                for c in clause.conflict_target_elements
+                )
+            if clause.conflict_target_whereclause is not None:
+                target_text += 'WHERE %s ' % self.process(clause.conflict_target_whereclause, include_table=False, use_schema=False)
+        else:
+            target_text = ''
+
+        if clause.action_do == 'nothing':
+            action_text = 'DO NOTHING'
+        elif clause.action_do == 'update':
+            action_set_ops = []
+            for k,v  in clause.update_values_to_set.items():
+                key_text = k if isinstance(k, util.string_types) else self.process(k, use_schema=False)
+                if v == on_conflict._UPDATE_SET_EXCLUDED:
+                    value_text = 'excluded.%s' % key_text
+                else:
+                    value_text = self.process(v, use_schema=False)
+                action_set_ops.append('%s = %s' % (key_text, value_text))
+            action_text = 'DO UPDATE SET %s' % ', '.join(action_set_ops)
+            if clause.update_whereclause:
+                action_text += ' %s' % self.process(clause.update_whereclause, use_schema=False)
+        else:
+            raise exc.CompileError("Unrecognized ON CONFLICT clause action: %r" % clause.action_do)
+
+        return 'ON CONFLICT %s%s' % (target_text, action_text)
+
 
 class PGDDLCompiler(compiler.DDLCompiler):
 
@@ -1639,7 +1798,10 @@ class PGDialect(default.DefaultDialect):
             "with_oids": None,
             "on_commit": None,
             "inherits": None
-        })
+        }),
+        (expression.Insert, {
+            "on_conflict": None
+        }),
     ]
 
     reflection_options = ('postgresql_ignore_search_path', )
